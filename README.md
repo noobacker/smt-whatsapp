@@ -44,10 +44,22 @@ npm run dev
 1. Create a new project on [Railway.app](https://railway.app)
 2. Connect your GitHub repository
 3. Select the whatsapp-bot directory
-4. Add the following environment variables:
-   - `MONGODB_URI` - Your MongoDB connection string
-   - `NEXT_PUBLIC_APP_URL` - URL of your deployed Next.js application
+4. **IMPORTANT**: Add the following environment variables:
+   - `MONGODB_URI` - Your MongoDB connection string (required)
+   - `NEXT_PUBLIC_APP_URL` - URL of your deployed Next.js application (required)
+
 5. Deploy the service
+6. Check the deployment logs to view the WhatsApp QR code for authentication
+7. Scan the QR code with your WhatsApp to link your phone
+
+### Troubleshooting Deployment
+
+If you encounter errors during deployment:
+
+1. **Missing Environment Variables**: Make sure both `MONGODB_URI` and `NEXT_PUBLIC_APP_URL` are set in Railway.app's environment settings
+2. **MongoDB Connection Issues**: Verify your MongoDB connection string is correct and the database is accessible from Railway
+3. **Network Issues**: Check that your Next.js app URL is correctly set and the API endpoints are accessible
+4. **Authentication Issues**: If the WhatsApp QR code doesn't appear in logs, try restarting the service
 
 ## Usage Instructions
 
