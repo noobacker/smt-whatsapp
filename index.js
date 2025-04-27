@@ -10,8 +10,23 @@ const { MongoClient } = require('mongodb');
 // Load environment variables
 require('dotenv').config();
 
-// MongoDB connection string
+// Check for required environment variables
 const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error('ERROR: MONGODB_URI environment variable is not set!');
+  console.error('Please set the MONGODB_URI environment variable to connect to MongoDB.');
+  process.exit(1);
+}
+
+// Check for app URL
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL;
+if (!APP_URL) {
+  console.error('WARNING: NEXT_PUBLIC_APP_URL environment variable is not set!');
+  console.error('This will be needed to generate PDFs. Using fallback http://localhost:3000');
+  process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
+}
+
+// MongoDB connection string
 const dbName = MONGODB_URI.split('/').pop().split('?')[0];
 
 // Initialize WhatsApp client with persistent session
@@ -32,10 +47,16 @@ let whatsappRequests;
 
 async function connectToMongoDB() {
   try {
-    const client = new MongoClient(MONGODB_URI);
+    console.log('Attempting to connect to MongoDB...');
+    const client = new MongoClient(MONGODB_URI, {
+      connectTimeoutMS: 30000,
+      socketTimeoutMS: 45000,
+      serverSelectionTimeoutMS: 60000,
+    });
+    
     await client.connect();
     
-    console.log('Connected to MongoDB');
+    console.log('Connected to MongoDB successfully');
     db = client.db(dbName);
     
     // Get collections
@@ -46,6 +67,8 @@ async function connectToMongoDB() {
     return true;
   } catch (error) {
     console.error('MongoDB connection error:', error);
+    console.error('The bot will continue running but database functionality will be unavailable');
+    console.error('Please check your MongoDB connection string and ensure your database is accessible');
     return false;
   }
 }
@@ -257,11 +280,17 @@ async function checkForStatement(partyCode) {
  */
 async function generateAndSendStatement(message, party, requestId) {
   try {
+    console.log(`Generating statement PDF for party ${party.code}...`);
+    
     // Find the latest statement
     const latestStatement = await statements.find()
       .sort({ statementDate: -1 })
       .limit(1)
       .toArray();
+    
+    if (!latestStatement || latestStatement.length === 0) {
+      throw new Error('No statements found in the database');
+    }
     
     const statementId = latestStatement[0]._id;
     
@@ -276,57 +305,66 @@ async function generateAndSendStatement(message, party, requestId) {
     }
     
     // Generate PDF using the API
-    const response = await axios.post(
-      `${process.env.NEXT_PUBLIC_APP_URL}/api/statement-excel/pdf`,
-      {
-        partyCode: party.code,
-        statementId: statementId.toString()
-      },
-      {
-        responseType: 'arraybuffer'
+    console.log(`Making API request to ${process.env.NEXT_PUBLIC_APP_URL}/api/statement-excel/pdf...`);
+    try {
+      const response = await axios.post(
+        `${process.env.NEXT_PUBLIC_APP_URL}/api/statement-excel/pdf`,
+        {
+          partyCode: party.code,
+          statementId: statementId.toString()
+        },
+        {
+          responseType: 'arraybuffer',
+          timeout: 60000 // 60 second timeout
+        }
+      );
+      
+      if (response.status !== 200) {
+        throw new Error(`Failed to generate PDF: ${response.statusText}`);
       }
-    );
-    
-    if (response.status !== 200) {
-      throw new Error(`Failed to generate PDF: ${response.statusText}`);
+      
+      // Convert PDF to base64
+      const pdfData = Buffer.from(response.data);
+      
+      // Create a temporary file name
+      const tempFileName = `statement_${party.code}_${Date.now()}.pdf`;
+      const tempFilePath = path.join(process.cwd(), tempFileName);
+      
+      console.log(`Writing PDF to temporary file: ${tempFilePath}`);
+      // Write the PDF to a temporary file
+      await fs.writeFile(tempFilePath, pdfData);
+      
+      // Create media from file
+      const media = MessageMedia.fromFilePath(tempFilePath);
+      
+      // Send the PDF
+      await message.reply(
+        `Here is your latest statement for ${party.customerName || party.code}:`
+      );
+      
+      console.log('Sending PDF via WhatsApp...');
+      await message.reply(media, { caption: `Statement ${party.code}` });
+      
+      // Clean up the temporary file
+      await fs.unlink(tempFilePath);
+      console.log('PDF sent successfully and temp file cleaned up');
+      
+      // Update request status
+      await whatsappRequests.updateOne(
+        { _id: requestId },
+        { 
+          $set: { 
+            status: 'PROCESSED',
+            statementSent: true,
+            responseMessage: 'Statement PDF sent successfully',
+            updatedAt: new Date()
+          } 
+        }
+      );
+    } catch (apiError) {
+      console.error('API error when generating PDF:', apiError);
+      throw new Error(`Failed to generate PDF: ${apiError.message}`);
     }
-    
-    // Convert PDF to base64
-    const pdfData = Buffer.from(response.data);
-    
-    // Create a temporary file name
-    const tempFileName = `statement_${party.code}_${Date.now()}.pdf`;
-    const tempFilePath = path.join(process.cwd(), tempFileName);
-    
-    // Write the PDF to a temporary file
-    await fs.writeFile(tempFilePath, pdfData);
-    
-    // Create media from file
-    const media = MessageMedia.fromFilePath(tempFilePath);
-    
-    // Send the PDF
-    await message.reply(
-      `Here is your latest statement for ${party.customerName || party.code}:`
-    );
-    
-    await message.reply(media, { caption: `Statement ${party.code}` });
-    
-    // Clean up the temporary file
-    await fs.unlink(tempFilePath);
-    
-    // Update request status
-    await whatsappRequests.updateOne(
-      { _id: requestId },
-      { 
-        $set: { 
-          status: 'PROCESSED',
-          statementSent: true,
-          responseMessage: 'Statement PDF sent successfully',
-          updatedAt: new Date()
-        } 
-      }
-    );
-    
   } catch (error) {
     console.error('Error generating and sending statement:', error);
     throw error;
